@@ -36,6 +36,8 @@ def argparser():
                     help='Standoff annotation file suffix (default "ann")')
     ap.add_argument('-c', '--singleclass', default=None,
                     help='Use given single class for annotations')
+    ap.add_argument('-A', '--attributes', default=False, action='store_true',
+                    help='Append attributes to label, separated by dash')
     ap.add_argument('-n', '--nosplit', default=False, action='store_true',
                     help='No sentence splitting')
     ap.add_argument('-o', '--outsuffix', default="conll",
@@ -246,6 +248,7 @@ def process_files(files):
 
 
 TEXTBOUND_LINE_RE = re.compile(r'^T\d+\t')
+ATTRIBUTE_LINE_RE = re.compile(r'^A\d+\t')
 
 Textbound = namedtuple('Textbound', 'start end type text')
 
@@ -254,19 +257,31 @@ def parse_textbounds(f):
     """Parse textbound annotations in input, returning a list of Textbound."""
 
     textbounds = []
+    mapping = {}
+    attributes = []
 
     for l in f:
         l = l.rstrip('\n')
 
         if not TEXTBOUND_LINE_RE.search(l):
+            if ATTRIBUTE_LINE_RE.match(l):
+                _, att_tid = l.split('\t')
+                att, tid = att_tid.split(' ')
+                attributes.append((tid, att))
             continue
 
         id_, type_offsets, text = l.split('\t')
         type_, start, end = type_offsets.split()
         start, end = int(start), int(end)
 
-        textbounds.append(Textbound(start, end, type_, text))
+        mapping[id_] = (start, end, [type_], text)
 
+    if options.attributes:
+        # need canonical order: sort by entity id, then by attribute
+        for tid, att in sorted(attributes):
+            mapping[tid][2].append(att)
+    textbounds = [Textbound(start, end, '-'.join(type_), text)
+            for start, end, type_, text in mapping.values()]
     return textbounds
 
 
