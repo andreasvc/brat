@@ -219,7 +219,7 @@ def process_files(files):
                 if fn == '-':
                     lines = process(sys.stdin)
                 else:
-                    with open(fn, 'rU') as f:
+                    with open(fn, 'r') as f:
                         lines = process(f)
 
                 # TODO: better error handling
@@ -298,7 +298,7 @@ def get_annotations(fn):
 
     annfn = path.splitext(fn)[0] + options.annsuffix
 
-    with open(annfn, 'rU') as f:
+    with open(annfn, 'r') as f:
         textbounds = parse_textbounds(f)
 
     textbounds = eliminate_overlaps(textbounds)
