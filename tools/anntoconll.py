@@ -11,12 +11,6 @@ from collections import namedtuple
 from io import StringIO
 from os import path
 
-from sentencesplit import sentencebreaks_to_newlines
-
-# assume script in brat tools/ directory, extend path to find sentencesplit.py
-sys.path.append(os.path.join(os.path.dirname(__file__), '../server/src'))
-sys.path.append('.')
-
 options = None
 
 EMPTY_LINE_RE = re.compile(r'^\s*$')
@@ -38,10 +32,11 @@ def argparser():
                     help='Use given single class for annotations')
     ap.add_argument('-A', '--attributes', default=False, action='store_true',
                     help='Append attributes to label, separated by dash')
-    ap.add_argument('-n', '--nosplit', default=False, action='store_true',
-                    help='No sentence splitting')
     ap.add_argument('-o', '--outsuffix', default="conll",
                     help='Suffix to add to output files (default "conll")')
+    ap.add_argument('-p', '--preprocess', default='regex',
+                    choices=['regex', 'syntok', 'none'],
+                    help='Sentence splitting and tokenization (default "regex")')
     ap.add_argument('-v', '--verbose', default=False, action='store_true',
                     help='Verbose output')
     ap.add_argument('text', metavar='TEXT', nargs='+',
@@ -117,6 +112,7 @@ def attach_labels(labels, lines):
 # token, while any non-alnum character is separated into a
 # single-character token. TODO: non-ASCII alnum.
 TOKENIZATION_REGEX = re.compile(r'([0-9a-zA-Z]+|[^0-9a-zA-Z])')
+PRETOKENIZED_REGEX = re.compile(r'\S+|\s+')
 
 NEWLINE_TERM_REGEX = re.compile(r'(.*?\n)')
 
@@ -125,23 +121,53 @@ def text_to_conll(f):
     """Convert plain text into CoNLL format."""
     global options
 
-    if options.nosplit:
-        sentences = f.readlines()
-    else:
-        sentences = []
-        for l in f:
-            l = sentencebreaks_to_newlines(l)
-            sentences.extend([s for s in NEWLINE_TERM_REGEX.split(l) if s])
+    # Apply sentence splitting and tokenization
+    # NB: ''.join(tokens) should equal the original sentence;
+    # i.e., tokens include the original whitespace, since character
+    # indices should not change.
+    sentences = []
+    if options.preprocess == 'none':
+        for line in f:
+            tokenized = [t for t in PRETOKENIZED_REGEX.findall(line) if t]
+            if tokenized:
+                sentences.append(tokenized)
+    elif options.preprocess == 'regex':
+        from sentencesplit import sentencebreaks_to_newlines
+
+        # assume script in brat tools/ directory,
+        # extend path to find sentencesplit.py
+        sys.path.append(os.path.join(os.path.dirname(__file__), '../server/src'))
+        sys.path.append('.')
+
+        for line in f:
+            line = sentencebreaks_to_newlines(line)
+            for s in NEWLINE_TERM_REGEX.split(line):
+                tokenized = [t for t in TOKENIZATION_REGEX.split(s) if t]
+                if tokenized:
+                    sentences.append(tokenized)
+    elif options.preprocess == 'syntok':
+        import syntok.segmenter as segmenter
+        document = f.read()
+        for paragraph in segmenter.analyze(document):
+            for sentence in paragraph:
+                tokenized = []
+                for token in sentence:
+                    if token.spacing:
+                        tokenized.append(token.spacing)
+                    if token.value:
+                        tokenized.append(token.value)
+                if tokenized:
+                    sentences.append(tokenized)
+            # FIXME: check for extra newline in paragraph break
+            sentences.append(['\n'])
 
     lines = []
 
     offset = 0
-    for s in sentences:
+    for tokenized_sentence in sentences:
         nonspace_token_seen = False
 
-        tokens = [t for t in TOKENIZATION_REGEX.split(s) if t]
-
-        for t in tokens:
+        for t in tokenized_sentence:
             if not t.isspace():
                 lines.append(['O', offset, offset + len(t), t])
                 nonspace_token_seen = True
@@ -153,13 +179,13 @@ def text_to_conll(f):
 
     # add labels (other than 'O') from standoff annotation if specified
     if options.annsuffix:
-        lines = relabel(lines, get_annotations(f.name))
+        lines = relabel(lines, get_annotations(f.name), f.name)
 
     lines = [[l[0], str(l[1]), str(l[2]), l[3]] if l else l for l in lines]
     return StringIO('\n'.join(('\t'.join(l) for l in lines)))
 
 
-def relabel(lines, annotations):
+def relabel(lines, annotations, fname):
     global options
 
     # TODO: this could be done more neatly/efficiently
@@ -168,7 +194,7 @@ def relabel(lines, annotations):
     for tb in annotations:
         for i in range(tb.start, tb.end):
             if i in offset_label:
-                print("Warning: overlapping annotations", file=sys.stderr)
+                print("Warning: overlapping annotations in %r" % fname, file=sys.stderr)
             offset_label[i] = tb
 
     prev_label = None
@@ -183,8 +209,8 @@ def relabel(lines, annotations):
         for o in range(start, end):
             if o in offset_label:
                 if o != start:
-                    print('Warning: annotation-token boundary mismatch: "%s" --- "%s"' % (
-                        token, offset_label[o].text), file=sys.stderr)
+                    print('Warning: annotation-token boundary mismatch in %r: "%s" --- "%s"' % (
+                        fname, token, offset_label[o].text), file=sys.stderr)
                 label = offset_label[o].type
                 break
 
